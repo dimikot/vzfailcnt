@@ -23,5 +23,4 @@ SYNOPSIS
    /usr/sbin/vzfailcnt conf
 
 3. Add script to your crontab using:
-   echo '*/5 * * * * root $SCRIPT_PATH conf' >> /etc/crontab
-   /etc/init.d/cron* reload
+   echo '*/1 * * * * root /usr/sbin/vzfailcnt conf' > /etc/cron.d/vzfailcnt.cron
