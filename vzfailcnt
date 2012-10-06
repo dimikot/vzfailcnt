@@ -23,12 +23,16 @@ sub main {
     $mail_to =~ /^[^@\s]+@[^@\s]+$/ or die "Invalid e-mail format: $mail_to\n";
     my $mail_from = $ARGV[1] || $MAIL_FROM || $mail_to;
     my $cur = read_ubc_file($UBC_FILE);
-    my $prv = read_ubc_file($UBC_PREV, 1) || $cur;
-    my $diff = calc_diff($prv, $cur);
-    if (keys %$diff) {
-        my $mail = get_mail_for_diff($diff, $mail_to, $mail_from);
-        sendmail($mail_to, $mail);
+    my $prv = read_ubc_file($UBC_PREV, 1);
+    if (!$prv) {
         copy($UBC_FILE, $UBC_PREV);
+    } else {
+        my $diff = calc_diff($prv, $cur);
+        if (keys %$diff) {
+            my $mail = get_mail_for_diff($diff, $mail_to, $mail_from);
+            sendmail($mail_to, $mail);
+            copy($UBC_FILE, $UBC_PREV);
+        }
     }
 }
 
