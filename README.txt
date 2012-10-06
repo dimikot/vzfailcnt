@@ -8,7 +8,7 @@ e-mail when these values are increased. When you call the script
 periodically (e.g. in 5-minute cron) and it sees that a failcnt
 value is changed, it mails you about that.
 
-The main advantage of the script that it has a zero configuration.
+The main advantage of the script is that it has zero configuration.
 It is also written in pure Perl with no deps on non-standard modules,
 so it may be copied to any linux machine with OpenVZ.
 
