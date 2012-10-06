@@ -1,0 +1,203 @@
+#!/usr/bin/perl -w
+my $VERSION = "1.00";
+
+use Cwd 'abs_path';
+use strict;
+
+# Constants.
+our $CONF_OVER     = '/etc/vzfailcnt.conf';
+our $MAIL_TO       = 'test@example.com';
+our $MAIL_FROM     = undef;
+our $SENDMAIL_PATH = '/usr/sbin/sendmail';
+our $UBC_FILE      = '/proc/user_beancounters';
+our $UBC_PREV      = '/var/spool/user_beancounters.old';
+our $CONF_DIR      = '/etc/vz/conf';
+our $SCRIPT_PATH   = abs_path(__FILE__);
+
+sub main {
+    if (-f $CONF_OVER) {
+        read_conf_over($CONF_OVER);
+    }
+    my $mail_to = $ARGV[0] or usage();
+    $mail_to = $MAIL_TO if $mail_to eq "conf";
+    $mail_to =~ /^[^@\s]+@[^@\s]+$/ or die "Invalid e-mail format: $mail_to\n";
+    my $mail_from = $ARGV[1] || $MAIL_FROM || $mail_to;
+    my $cur = read_ubc_file($UBC_FILE);
+    my $prv = read_ubc_file($UBC_PREV, 1) || $cur;
+    my $diff = calc_diff($prv, $cur);
+    if (keys %$diff) {
+        my $mail = get_mail_for_diff($diff, $mail_to, $mail_from);
+        sendmail($mail_to, $mail);
+        copy($UBC_FILE, $UBC_PREV);
+    }
+}
+
+sub read_conf_over {
+    my ($f) = @_;
+    open(local *F, $f) or die "Cannot open $f: $!\n";
+    while (<F>) {
+        s/#.*//sg;
+        my ($k, $v) = /^\s*(\w+)\s*=\s*(.*?)\s*$/s or next;
+        no strict 'refs';
+        $$k = $v;
+    }
+}
+
+sub read_ubc_file {
+    my ($fn, $ignore_error) = @_;
+    my @col_names = ();
+    my $cur_uid = undef;
+    my $cur_host = undef;
+    my %result = ();
+    open(local *F, $fn) or return ($ignore_error? undef : die "Cannot open $fn: $!\n");
+    while (<F>) {
+        s/^\s+|\s+$//sg;
+        if (/^\D+:/) {
+            next;
+        }
+        if (/^uid\s+(.*)/s) {
+            @col_names = $1 =~ /(\w+)/g;
+            next;
+        }
+        if (/^(\d+):\s*(.*)/s) {
+            $cur_uid = $1;
+            $cur_host = get_host_by_uid($cur_uid);
+            $_ = $2;
+            # no next - continue processing
+        }
+        my @data = /(\w+)/g;
+        if (@data < 3) {
+            next;
+        }
+        my %resources;
+        @resources{@col_names} = @data;
+        $result{$cur_uid} ||= {
+            hostname  => $cur_host,
+            uid       => $cur_uid,
+            resources => {},
+        };
+        $result{$cur_uid}{resources}{$resources{resource}} = \%resources;
+    }
+    #use Data::Dumper; die Dumper(\%result);
+    return \%result;
+}
+
+sub calc_diff {
+    my ($prv, $cur) = @_;
+    my %diff = ();
+    foreach my $uid (sort keys %$prv) {
+        next if !$cur->{$uid};
+        my %res_prv = %{$prv->{$uid}{resources}};        
+        my %res_cur = %{$cur->{$uid}{resources}};
+        foreach my $res_name (sort keys %res_prv) {
+            my $sub = $res_cur{$res_name}{failcnt} - $res_prv{$res_name}{failcnt};
+            next if $sub <= 0;
+            $diff{$uid} ||= {
+                hostname  => $prv->{$uid}{hostname},
+                uid       => $uid,
+                resources => {},
+            };
+            $diff{$uid}{resources}{$res_name} = { %{$res_cur{$res_name}}, failcntdiff => $sub };
+        }
+    }
+    #use Data::Dumper; die Dumper(\%diff);
+    return \%diff;
+}
+
+sub get_mail_for_diff {
+    my ($diff, $arg_mail_to, $arg_mail_from) = @_;
+    my @cols = ('uid', 'hostname', 'resource', 'failcntdiff', 'failcnt', 'held', 'maxheld', 'barrier', 'limit');
+    my @html = "<table>";
+    push @html, "<tr>";
+    foreach my $col (@cols) {
+        push @html, "<td><b>$col</b>&#160;</td>";
+    }
+    push @html, "</tr>";
+    foreach my $uid (sort keys %$diff) {
+        push @html, "<tr>";
+        foreach my $res_name (sort keys %{$diff->{$uid}{resources}}) {
+            my $seen_failcnt = 0;
+            foreach my $col (@cols) {
+                my $val = $diff->{$uid}{$col} || $diff->{$uid}{resources}{$res_name}{$col};
+                if ($col eq "failcntdiff") {
+                    $val = "<font color=\"#A00\"><b>+$val</b></font>";
+                    $seen_failcnt = 1;
+                } elsif ($seen_failcnt) {
+                    $val = "<font color=\"#CCC\">$val</font>";
+                }
+                push @html, "<td>$val&#160;</td>";
+            }
+        }
+        push @html, "</tr>";
+    }
+    push @html, '</table>';
+    my $tmpl = join("", <DATA>);
+    # Expand the template.
+    my $mail_from = $arg_mail_from;
+    my $mail_to   = $arg_mail_to;
+    my $mail_html = join("\n", @html, "");
+    my $myhostname = `hostname`; $myhostname =~ s/\s+//sg;
+    $tmpl = eval("return qq\x01$tmpl\x01");
+    #die $tmpl;
+    return $tmpl;
+}
+
+sub sendmail {
+    my ($to, $body) = @_;
+    open(P, "|-", $SENDMAIL_PATH, "-t", $to) or die "Cannot execute $SENDMAIL_PATH: $!\n";
+    print P $body;
+    close(P);
+}
+
+sub get_host_by_uid {
+    my ($uid) = @_;
+    if (open(local *F, "$CONF_DIR/$uid.conf")) {
+        while (<F>) {
+            /^\s*HOSTNAME\s*=\s*[\"\']?([^\"\'\s]+)/m and return $1;
+        }
+    }
+    return "[unknown]";
+}
+
+sub usage {
+    die join "\n", (
+        "dkLab vzfailcnt v$VERSION: send OpenVZ failcnt changes over e-mail",
+        "Homepage: http://en.dklab.ru/vzfailcnt",
+        "Configuration: $CONF_OVER (optional)",
+        "Usage:",
+        "  $SCRIPT_PATH your\@email.com",
+        "  - or -",
+        "  $SCRIPT_PATH conf    # if you've defined MAIL_TO in $CONF_OVER",
+        "",
+        "Add script to your crontab using:",
+        "  echo '*/5 * * * * root $SCRIPT_PATH conf' >> /etc/crontab",
+        "  /etc/init.d/cron* reload",
+        ""
+    );
+}
+
+sub copy {
+    my ($from, $to) = @_;
+    open(local *F, $from) or die "Cannot open $from: $!\n";
+    open(local *T, ">", $to) or die "Cannot open $to for writing: $!\n";
+    while (<F>) {
+        print T $_;
+    }
+}
+
+main();
+
+__DATA__
+From: "dkLab vzfailcnt" <$mail_from>
+To: <$mail_to>
+Reply-To: <$mail_to>
+Subject: OpenVZ failcnt increased at $myhostname
+Content-Type: text/html; charset=utf-8
+
+<p>Hello.</p>
+
+<p>Fail counter of resource(s) has been increased.</p>
+
+<p>$mail_html</p>
+
+<p>-- <br/>dkLab vzfailcnt v$VERSION</p>
