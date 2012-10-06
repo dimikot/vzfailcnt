@@ -13,6 +13,14 @@ It is also written in pure Perl with no deps on non-standard modules,
 so it may be copied to any linux machine with OpenVZ.
 
 
+INSTALLATION
+------------
+
+cd /usr/sbin
+wget http://github.com/DmitryKoterov/vzfailcnt/raw/master/vzfailcnt
+chmod +x vzfailcnt
+
+
 SYNOPSIS
 --------
 
