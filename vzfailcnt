@@ -1,5 +1,5 @@
 #!/usr/bin/perl -w
-my $VERSION = "1.00";
+my $VERSION = "1.02";
 
 use Cwd 'abs_path';
 use strict;
@@ -89,22 +89,21 @@ sub read_ubc_file {
 sub calc_diff {
     my ($prv, $cur) = @_;
     my %diff = ();
-    foreach my $uid (sort keys %$prv) {
-        next if !$cur->{$uid};
-        my %res_prv = %{$prv->{$uid}{resources}};        
+    foreach my $uid (sort keys %$cur) {
+        my %res_prv = %{$prv->{$uid}{resources} || {}};
         my %res_cur = %{$cur->{$uid}{resources}};
-        foreach my $res_name (sort keys %res_prv) {
-            my $sub = $res_cur{$res_name}{failcnt} - $res_prv{$res_name}{failcnt};
+        foreach my $res_name (sort keys %res_cur) {
+            my $sub = $res_cur{$res_name}{failcnt} - ($res_prv{$res_name}{failcnt} || 0);
             next if $sub <= 0;
             $diff{$uid} ||= {
-                hostname  => $prv->{$uid}{hostname},
+                hostname  => $cur->{$uid}{hostname},
                 uid       => $uid,
                 resources => {},
             };
             $diff{$uid}{resources}{$res_name} = { %{$res_cur{$res_name}}, failcntdiff => $sub };
         }
     }
-    #use Data::Dumper; die Dumper(\%diff);
+#    use Data::Dumper; die Dumper(\%diff);
     return \%diff;
 }
 
@@ -118,8 +117,8 @@ sub get_mail_for_diff {
     }
     push @html, "</tr>";
     foreach my $uid (sort keys %$diff) {
-        push @html, "<tr>";
         foreach my $res_name (sort keys %{$diff->{$uid}{resources}}) {
+            push @html, "<tr>";
             my $seen_failcnt = 0;
             foreach my $col (@cols) {
                 my $val = $diff->{$uid}{$col} || $diff->{$uid}{resources}{$res_name}{$col};
@@ -131,8 +130,8 @@ sub get_mail_for_diff {
                 }
                 push @html, "<td>$val&#160;</td>";
             }
+            push @html, "</tr>";
         }
-        push @html, "</tr>";
     }
     push @html, '</table>';
     my $tmpl = join("", <DATA>);
