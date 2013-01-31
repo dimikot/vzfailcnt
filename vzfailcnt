@@ -169,6 +169,7 @@ sub get_disk_limits_host {
             s/^\s+|\s+$//sg;
             next if ! /^\s*(\S+)\s+(\d+)\s+(\d+)/s;
             my ($dev, $limit, $held) = ($1, $2, $3);
+            next if !$limit;
             my $percent = int($held / $limit * 100);
             push @rows, {
                 uid      => 0,
