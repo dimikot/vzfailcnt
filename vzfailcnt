@@ -1,39 +1,50 @@
 #!/usr/bin/perl -w
-my $VERSION = "1.02";
+my $VERSION = "2.00";
 
 use Cwd 'abs_path';
+use Sys::Syslog qw(:standard :macros);
 use strict;
 
-# Constants.
-our $CONF_OVER     = '/etc/vzfailcnt.conf';
-our $MAIL_TO       = 'test@example.com';
-our $MAIL_FROM     = undef;
-our $SENDMAIL_PATH = '/usr/sbin/sendmail';
-our $UBC_FILE      = '/proc/user_beancounters';
-our $UBC_PREV      = '/var/spool/user_beancounters.old';
-our $CONF_DIR      = '/etc/vz/conf';
-our $SCRIPT_PATH   = abs_path(__FILE__);
+# Constants (may be overriden in config).
+our $CONF_OVER      = '/etc/vzfailcnt.conf';
+our $MAIL_TO        = undef;
+our $MAIL_FROM      = undef;
+our $THRESHOLD_DISK = '80%';
+our $SENDMAIL_PATH  = '/usr/sbin/sendmail';
+our $UBC_FILE       = '/proc/user_beancounters';
+our $UBC_PREV       = '/var/spool/user_beancounters.old';
+our $CONF_DIR       = '/etc/vz/conf';
+our $SCRIPT_PATH    = abs_path(__FILE__);
 
 sub main {
     if (-f $CONF_OVER) {
         read_conf_over($CONF_OVER);
     }
-    my $mail_to = $ARGV[0] or usage();
-    $mail_to = $MAIL_TO if $mail_to eq "conf";
-    $mail_to =~ /^[^@\s]+@[^@\s]+$/ or die "Invalid e-mail format: $mail_to\n";
-    my $mail_from = $ARGV[1] || $MAIL_FROM || $mail_to;
-    my $cur = read_ubc_file($UBC_FILE);
-    my $prv = read_ubc_file($UBC_PREV, 1);
-    if (!$prv) {
-        copy($UBC_FILE, $UBC_PREV);
-    } else {
-        my $diff = calc_diff($prv, $cur);
-        if (keys %$diff) {
-            my $mail = get_mail_for_diff($diff, $mail_to, $mail_from);
-            sendmail($mail_to, $mail);
-            copy($UBC_FILE, $UBC_PREV);
-        }
+
+    my $mail_to = $ARGV[0];
+    if (!$mail_to || $mail_to eq "conf") {
+        $mail_to = $MAIL_TO;
+        usage() if !$mail_to;
     }
+    $mail_to =~ /^[^@\s]+@[^@\s]+$/s or die "Invalid e-mail format: $mail_to\n";
+    my $mail_from = $MAIL_FROM || $mail_to;
+    $THRESHOLD_DISK =~ s/\D+//sg;
+
+    my ($cur, $cur_content) = read_ubc_file($UBC_FILE);
+    my $prv = read_ubc_file($UBC_PREV, 1);
+    my $diff = calc_diff($prv, $cur);
+    if (keys %$diff) {
+        my $mail = get_mail_for_diff($diff, $mail_to, $mail_from);
+        sendmail($mail_to, $mail);
+        openlog("vzfailcnt", "ndelay,pid", LOG_USER);
+        syslog(LOG_INFO, "E-mail with failcnt changes is sent to %s", $mail_to);
+        closelog();
+    }
+
+    # Always save the file, even if no diffs are detected, because there may
+    # be other resources appeared since the previous run, e.g. new disks are
+    # mounted, new machines are started etc.
+    write_file($UBC_PREV, $cur_content);
 }
 
 sub read_conf_over {
@@ -48,43 +59,129 @@ sub read_conf_over {
 }
 
 sub read_ubc_file {
-    my ($fn, $ignore_error) = @_;
+    my ($fn, $is_saved_file) = @_;
+    my $file_content = "";
     my @col_names = ();
     my $cur_uid = undef;
     my $cur_host = undef;
     my %result = ();
-    open(local *F, $fn) or return ($ignore_error? undef : die "Cannot open $fn: $!\n");
-    while (<F>) {
-        s/^\s+|\s+$//sg;
-        if (/^\D+:/) {
+    open(local *F, $fn) or return ($is_saved_file? undef : die "Cannot open $fn: $!\n");
+    foreach my $line (<F>) {
+        $file_content .= $line;
+        $line =~ s/^\s+|\s+$//sg;
+        if ($line =~ /^\D+:/) {
             next;
         }
-        if (/^uid\s+(.*)/s) {
-            @col_names = $1 =~ /(\w+)/g;
+        if ($line =~ /^uid\s+(.*)/s) {
+            @col_names = $1 =~ /(\S+)/g;
             next;
         }
-        if (/^(\d+):\s*(.*)/s) {
-            $cur_uid = $1;
+        my @rows = ();
+        if ($line =~ /^(\d+):\s*(.*)/s) {
+            ($cur_uid, $line) = ($1, $2);
             $cur_host = get_host_by_uid($cur_uid);
-            $_ = $2;
-            # no next - continue processing
+            if (!$is_saved_file) {
+                push @rows, get_disk_limits($cur_uid);
+                foreach my $row (@rows) {
+                    $file_content .= (" " x 12) . join("    ", @$row{@col_names}) . "\n";
+                }
+            }
+            # no "next" - continue processing
         }
-        my @data = /(\w+)/g;
-        if (@data < 3) {
+        if ((my @data = $line =~ /(\S+)/g) > 3) {
+            my %row;
+            @row{@col_names} = @data;
+            push @rows, \%row;
+        }
+        foreach my $row (@rows) {
+            $result{$cur_uid} ||= {
+                hostname  => $cur_host,
+                uid       => $cur_uid,
+                resources => {},
+            };
+            $result{$cur_uid}{resources}{$row->{resource}} = $row;
+        }
+    }
+#    use Data::Dumper; die Dumper(\%result);
+    return wantarray? (\%result, $file_content) : \%result;
+}
+
+sub get_disk_limits {
+    my ($uid) = @_;
+    return () if $THRESHOLD_DISK !~ /^\d+$/s;
+    if (!$uid) {
+        return get_disk_limits_host();
+    } else {
+        return get_disk_limits_uid($uid);
+    }
+}
+
+sub get_disk_limits_uid {
+    my ($uid) = @_;
+    my $lines = `vzquota stat "$uid" -f`;
+    my @col_names = ();
+    my @rows = ();
+    foreach (split /\n/, $lines) {
+        s/^\s+|\s+$//sg;
+        if (!@col_names) {
+            @col_names = /(\S+)/g;
             next;
         }
-        my %resources;
-        @resources{@col_names} = @data;
-        $result{$cur_uid} ||= {
-            hostname  => $cur_host,
-            uid       => $cur_uid,
-            resources => {},
-        };
-        $result{$cur_uid}{resources}{$resources{resource}} = \%resources;
+        if ((my @data = /(\S+)/g) > 3) {
+            my %row;
+            @row{@col_names} = @data;
+            my $ubc_name = undef;
+            if ($row{resource} eq "1k-blocks") {
+                $ubc_name = "diskspace.%";
+            }
+            if ($row{resource} eq "inodes") {
+                $ubc_name = "diskinodes.%";
+            }
+            my $limit = $row{softlimit} < $row{hardlimit}? $row{softlimit} : $row{hardlimit};
+            if ($ubc_name && $limit) {
+                my $percent = int($row{usage} / $limit * 100);
+                push @rows, {
+                    uid      => $uid,
+                    resource => $ubc_name,
+                    held     => $percent . "%",
+                    maxheld  => $percent . "%",
+                    barrier  => $THRESHOLD_DISK . "%",
+                    limit    => "100%",
+                    failcnt  => $percent > $THRESHOLD_DISK? ($percent - $THRESHOLD_DISK) : 0,
+                };
+            }
+        }
     }
-    #use Data::Dumper; die Dumper(\%result);
-    return \%result;
+    return @rows;
 }
+
+sub get_disk_limits_host {
+    my @rows = ();
+    my %commands = (
+       "diskspace.%"  => "df",
+       "diskinodes.%" => "df -i",
+    );
+    while (my ($ubc_name, $cmd) = each %commands) {
+        my $lines = `$cmd | tail -n+2`;
+        foreach (split /\n/, $lines) {
+            s/^\s+|\s+$//sg;
+            next if ! /^\s*(\S+)\s+(\d+)\s+(\d+)/s;
+            my ($dev, $limit, $held) = ($1, $2, $3);
+            my $percent = int($held / $limit * 100);
+            push @rows, {
+                uid      => 0,
+                resource => $ubc_name . "." . $dev,
+                held     => $percent . "%",
+                maxheld  => $percent . "%",
+                barrier  => $THRESHOLD_DISK . "%",
+                limit    => "100%",
+                failcnt  => $percent > $THRESHOLD_DISK? ($percent - $THRESHOLD_DISK) : 0,
+            };
+        }
+    }
+    return @rows;
+}
+
 
 sub calc_diff {
     my ($prv, $cur) = @_;
@@ -154,6 +251,11 @@ sub sendmail {
 
 sub get_host_by_uid {
     my ($uid) = @_;
+    if (!$uid) {
+       my $hostname = `hostname`;
+       $hostname =~ s/\s+//sg;
+       return $hostname;
+    }
     if (open(local *F, "$CONF_DIR/$uid.conf")) {
         while (<F>) {
             /^\s*HOSTNAME\s*=\s*[\"\']?([^\"\'\s]+)/m and return $1;
@@ -170,21 +272,19 @@ sub usage {
         "Usage:",
         "  $SCRIPT_PATH your\@email.com",
         "  - or -",
-        "  $SCRIPT_PATH conf    # if you've defined MAIL_TO in $CONF_OVER",
+        "  $SCRIPT_PATH    # if you've defined MAIL_TO in $CONF_OVER",
         "",
         "Add script to your crontab using:",
-        "  echo '*/1 * * * * root $SCRIPT_PATH conf' > /etc/cron.d/vzfailcnt.cron",
+        "  echo '*/1 * * * * root $SCRIPT_PATH' > /etc/cron.d/vzfailcnt.cron",
         ""
     );
 }
 
-sub copy {
-    my ($from, $to) = @_;
-    open(local *F, $from) or die "Cannot open $from: $!\n";
+sub write_file {
+    my ($to, $content) = @_;
     open(local *T, ">", $to) or die "Cannot open $to for writing: $!\n";
-    while (<F>) {
-        print T $_;
-    }
+    print T $content;
+    close T;
 }
 
 main();

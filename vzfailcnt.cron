@@ -1,2 +1,2 @@
 # Put this file to /etc/cron.d/
-*/1 * * * * root /usr/sbin/vzfailcnt conf
+*/1 * * * * root /usr/sbin/vzfailcnt
