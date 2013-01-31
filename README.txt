@@ -1,4 +1,4 @@
-dkLab vzfailcnt: send OpenVZ failcnt changes over e-mail
+dkLab vzfailcnt: send OpenVZ failcnt changes and diskspace alerts over e-mail
 (C) Dmitry Koterov, http://en.dklab.ru/lib/vzfailcnt/
 License: GPL
 
