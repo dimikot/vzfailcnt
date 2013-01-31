@@ -17,6 +17,8 @@ our $CONF_DIR       = '/etc/vz/conf';
 our $SCRIPT_PATH    = abs_path(__FILE__);
 
 sub main {
+    $ENV{PATH} = "$ENV{PATH}:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin";
+
     if (-f $CONF_OVER) {
         read_conf_over($CONF_OVER);
     }
