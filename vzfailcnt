@@ -278,7 +278,7 @@ sub usage {
         "  $SCRIPT_PATH    # if you've defined MAIL_TO in $CONF_OVER",
         "",
         "Add script to your crontab using:",
-        "  echo '*/1 * * * * root $SCRIPT_PATH' > /etc/cron.d/vzfailcnt.cron",
+        "  echo '*/1 * * * * root $SCRIPT_PATH' > /etc/cron.d/vzfailcntcron",
         ""
     );
 }

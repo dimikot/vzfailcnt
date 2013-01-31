@@ -36,4 +36,4 @@ SYNOPSIS
    # /usr/sbin/vzfailcnt
 
 3. Add script to your crontab using:
-   # echo '*/1 * * * * root /usr/sbin/vzfailcnt' > /etc/cron.d/vzfailcnt.cron
+   # echo '*/1 * * * * root /usr/sbin/vzfailcnt' > /etc/cron.d/vzfailcntcron
