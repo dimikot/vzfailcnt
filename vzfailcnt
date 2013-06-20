@@ -1,8 +1,9 @@
 #!/usr/bin/perl -w
-my $VERSION = "2.00";
+my $VERSION = "2.01";
 
 use Cwd 'abs_path';
 use Sys::Syslog qw(:standard :macros);
+use Digest::MD5 qw(md5_hex);
 use strict;
 
 # Constants (may be overriden in config).
@@ -169,6 +170,7 @@ sub get_disk_limits_host {
             s/^\s+|\s+$//sg;
             next if ! /^\s*(\S+)\s+(\d+)\s+(\d+)/s;
             my ($dev, $limit, $held) = ($1, $2, $3);
+            next if !$limit;
             my $percent = int($held / $limit * 100);
             push @rows, {
                 uid      => 0,
@@ -215,8 +217,11 @@ sub get_mail_for_diff {
         push @html, "<td><b>$col</b>&#160;</td>";
     }
     push @html, "</tr>";
+    my (@uid_res_names, %res_names);
     foreach my $uid (sort keys %$diff) {
         foreach my $res_name (sort keys %{$diff->{$uid}{resources}}) {
+            $res_names{$res_name}++;
+            push @uid_res_names, "$uid:$res_name";
             push @html, "<tr>";
             my $seen_failcnt = 0;
             foreach my $col (@cols) {
@@ -239,6 +244,8 @@ sub get_mail_for_diff {
     my $mail_to   = $arg_mail_to;
     my $mail_html = join("\n", @html, "");
     my $myhostname = `hostname`; $myhostname =~ s/\s+//sg;
+    my $res_names = join(", ", sort keys %res_names);
+    my $msgid = md5_hex("$myhostname." . join(".", @uid_res_names)) . "\@vzfailcnt";
     $tmpl = eval("return qq\x01$tmpl\x01");
     #die $tmpl;
     return $tmpl;
@@ -277,7 +284,7 @@ sub usage {
         "  $SCRIPT_PATH    # if you've defined MAIL_TO in $CONF_OVER",
         "",
         "Add script to your crontab using:",
-        "  echo '*/1 * * * * root $SCRIPT_PATH' > /etc/cron.d/vzfailcnt.cron",
+        "  echo '*/1 * * * * root $SCRIPT_PATH' > /etc/cron.d/vzfailcntcron",
         ""
     );
 }
@@ -295,7 +302,9 @@ __DATA__
 From: "dkLab vzfailcnt" <$mail_from>
 To: <$mail_to>
 Reply-To: <$mail_to>
-Subject: OpenVZ failcnt increased at $myhostname
+Subject: OpenVZ failcnt increased at $myhostname: $res_names
+Message-Id: <$msgid>
+In-Reply-To: <$msgid>
 Content-Type: text/html; charset=utf-8
 
 <p>Hello.</p>
