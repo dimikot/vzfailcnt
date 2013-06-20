@@ -1,0 +1,5 @@
+# Put this file to /etc/cron.d/
+# Attention! File name must not contain dots nor other non-alphanumerics!
+# Else it is not recognized by at least Ubuntu Server.
+
+*/1 * * * * root /usr/sbin/vzfailcnt
