@@ -161,8 +161,8 @@ sub get_disk_limits_uid {
 sub get_disk_limits_host {
     my @rows = ();
     my %commands = (
-       "diskspace.%"  => "df",
-       "diskinodes.%" => "df -i",
+       "diskspace.%"  => "df -P",
+       "diskinodes.%" => "df -iP",
     );
     while (my ($ubc_name, $cmd) = each %commands) {
         my $lines = `$cmd | tail -n+2`;
